@@ -1,0 +1,40 @@
+---
+
+name: Plugins
+
+permissions:
+  contents: write
+  packages: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_reason:
+        description: 'Reason for manual execution'
+        required: false
+        default: 'Manual run by user'
+
+  workflow_run:
+    workflows: ["Release"]
+    types:
+      - completed
+
+jobs:
+  run_script_job:
+    if: |
+      github.event_name == 'workflow_dispatch' || 
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+
+    env:
+      AFFECT_RELEASE: "true" 
+      DEBUG: "false"
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ORG_NAME: ${{ github.repository_owner }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Bash Script
+        run: |
+          bash scripts/plugins

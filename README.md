@@ -9,21 +9,25 @@
 
 ### Installing Pre-compiled Binaries
 
-1. Download the latest binary for your platform from the [`kuadrantctl` Releases](https://github.com/Kuadrant/kuadrantctl/releases) page.
-2. Unpack the binary.
-3. Move it to a directory in your `$PATH` so that it can be executed from anywhere.
+1. Download the latest binary package for your platform from the [`kuadrantctl` Releases](https://github.com/Kuadrant/kuadrantctl/releases) page.
+2. Unpack the archive. This will extract two binaries:
+   - `kuadrantctl` - the main CLI tool
+   - `kubectl-kuadrant_dns` - the DNS operator plugin
+3. Move **both binaries** to a directory in your `$PATH` so that they can be executed from anywhere.
+
+**Note:** Both binaries are required for full functionality. The DNS plugin is invoked through the `kuadrantctl dns` command.
 
 ### Compiling from Source
 
-If you prefer to compile from source or are contributing to the project, you can install `kuadrantctl` using  `make install`. This method requires Golang 1.23.6 or newer.
+If you prefer to compile from source or are contributing to the project, you can install `kuadrantctl` using `make install`. This method requires Golang 1.23.6 or newer.
 
-It is possible to use the make target `install` to compile from source. From root of the repository, run 
+It is possible to use the make target `install` to compile from source. From root of the repository, run
 
 ```bash
 make install
 ```
 
-This will compile `kuadrantctl` and install it in the `bin` directory at root of directory. It will also ensure the correct version of the binary is displayed . It can be ran using `./bin/kuadrantctl` .  
+This will compile `kuadrantctl` and install it in the `bin` directory at root of directory. It will also ensure the correct version of the binary is displayed. It can be ran using `./bin/kuadrantctl`.  
 
 ## Usage
 
