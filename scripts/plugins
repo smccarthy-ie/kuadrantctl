@@ -1,0 +1,233 @@
+#! /usr/bin/env bash
+
+echo "Running plugin packaging"
+
+ORG="${ORG_NAME:-Kuadrant}"
+CTL=$ORG/kuadrantctl
+PLUGINS=($ORG/dns-operator)
+
+echo "target repo: $CTL"
+echo "plugins"
+for plugin in "${PLUGINS[@]}"; do
+  echo "- $plugin"
+done
+echo
+if [ "$AFFECT_RELEASE" = "true" ]; then
+    echo "Updating release: YES"
+else
+    echo "Updating release: NO"
+    echo "Set AFFECT_RELEASE=true to update release"
+fi
+echo
+
+# -----
+# Set up workspace
+#
+
+INITIAL_LOCATION=$(pwd)
+
+download() {
+    data="$1"
+
+    echo "Get $data release data"
+
+    API_URL="https://api.github.com/repos/${data}/releases/latest"
+    echo "Fetching latest release data for ${data}..."
+    echo "API Endpoint: $API_URL"
+    marker
+
+    RELEASE_DATA=$(curl \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer $GITHUB_TOKEN" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        -s "$API_URL")
+    if echo "$RELEASE_DATA" | grep -q "Not Found"; then
+        echo "ERROR: Repository or latest release not found." >&2
+        exit 1
+    fi
+
+    VERSION=$(echo "$RELEASE_DATA" | jq -r '.tag_name')
+
+    echo "$plugin: $VERSION" 
+    ASSET_LIST=$(echo "$RELEASE_DATA" | jq -r '.assets[] | "\(.name)\t\(.browser_download_url)"')
+
+    # Set IFS to tab for separation
+    while IFS=$'\t' read -r asset_name asset_url; do
+        if [[ "$asset_name" == *".tar.gz" ]]; then
+            echo "Asset Name: $asset_name"
+            echo "Download URL: $asset_url"
+            asset_path="$TMP_DIR/$data/$asset_name"
+            echo "Downloading..."
+            curl \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -L "$asset_url" -o "$asset_path"
+            if [ $? -ne 0 ]; then
+                echo "Error: Failed to download: $asset_url." >&2
+                exit 1
+            fi
+
+            echo "Extracting..."
+            IFS='-' read -ra temp <<< "$asset_name"
+            temp1="${temp[-2]}-${temp[-1]}"
+            arch="${temp1%%.*}"
+            tar -xzf "$asset_path" -C "$TMP_DIR/binaries/$arch"
+            if [ $? -ne 0 ]; then
+                echo "Error: Failed to extract: $asset_path." >&2
+                exit 1
+            fi
+            marker
+        fi
+    done <<< "$ASSET_LIST"
+}
+
+marker() {
+    echo "-----------------------------------"
+}
+
+cleanup() {
+    cd "$INITIAL_LOCATION"
+    if [ -z "$TMP_DIR" ]; then
+        return 0
+    fi
+    if [ "$DEBUG" = "true" ]; then
+        echo
+        echo "DEBUG MODE: Temporary directory cleanup is DISABLED."
+        echo "Directory contents left for inspection: $TMP_DIR"
+        echo "To remove it manually: rm -rf \"$TMP_DIR\""
+    else
+        if [ -d "$TMP_DIR" ]; then
+            echo "Cleaning up temporary directory: $TMP_DIR"
+            rm -rf "$TMP_DIR"
+        fi
+    fi
+}
+
+trap cleanup EXIT HUP INT QUIT TERM
+
+TMP_DIR=$(mktemp -d -t kuadrantctl.XXXXXXXXXX)
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to create temporary directory." >&2
+    exit 1
+fi
+
+mkdir -p $TMP_DIR/archives/
+mkdir -p $TMP_DIR/$CTL/
+mkdir -p $TMP_DIR/binaries/{darwin-amd64,linux-amd64,darwin-arm64,linux-arm64}
+for plugin in "${PLUGINS[@]}"; do
+    mkdir -p $TMP_DIR/$plugin/
+done
+
+echo "Created temporary directory: $TMP_DIR"
+marker
+
+# -----
+echo "Get $CTL version"
+
+API_URL="https://api.github.com/repos/${CTL}/releases/latest"
+echo "Fetching latest release data for ${CTL}..."
+echo "API Endpoint: $API_URL"
+marker
+
+RELEASE_DATA=$(curl \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer $GITHUB_TOKEN" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    -s "$API_URL")
+if echo "$RELEASE_DATA" | grep -q "Not Found"; then
+    echo "ERROR: Repository or latest release not found." >&2
+    exit 1
+fi
+
+CTL_VERSION=$(echo "$RELEASE_DATA" | jq -r '.tag_name')
+echo "$CTL version: $CTL_VERSION"
+CTL_ID=$(echo "$RELEASE_DATA" | jq -r '.id')
+echo "$CTL id: $CTL_ID"
+marker
+
+# download require files
+download "$CTL"
+for plugin in "${PLUGINS[@]}"; do
+    download "$plugin"
+done
+
+echo "Creating archives"
+while read -r dir; do
+    tar_file="../../archives/kuadrantctl-$CTL_VERSION-$dir.tar.gz"
+    echo "Creating archive for : $dir"
+    cd "$TMP_DIR/binaries/$dir"
+    touch "$tar_file"
+    tar -czvf "$tar_file" .
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to create tar.gz : $tar_file" >&2
+        exit 1
+    fi
+done <<< "$(ls $TMP_DIR/binaries)"
+marker
+
+echo "Generating MD5 files..."
+cd "$TMP_DIR/archives"
+for file in *.tar.gz; do 
+    md5sum "$file" > "$file".md5 
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to generate MD5 file foe $file" >&2
+        exit 1
+    fi
+done
+marker
+
+echo "Update release assets in GitHub for $CTL"
+ASSETS=$(curl -L \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  "https://api.github.com/repos/$CTL/releases/$CTL_ID/assets" \
+  )
+
+ASSETS=$(echo $ASSETS | jq -r '.[] | "\(.name)\t\(.url)"')
+
+while IFS=$'\t' read -r name url; do
+
+    file="$TMP_DIR/archives/$name"
+    echo "checking file: $file"
+    if [ -f "$file" ]; then
+        echo "Resouce to update: $name, $url"
+
+        if [ "$AFFECT_RELEASE" = "true" ]; then
+            echo "Deleting: $name"
+            curl -L \
+              -X DELETE \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$url"
+            if [ $? -ne 0 ]; then
+                echo "Error: deleting existing resource from release" >&2
+                exit 1
+            fi
+
+            echo "Uploading new version: $name"
+            curl -L \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Content-Type: application/octet-stream" \
+              "https://uploads.github.com/repos/$CTL/releases/$CTL_ID/assets?name=$name" \
+              --data-binary "@$file"
+            if [ $? -ne 0 ]; then
+                echo "Error: Uploading new resource" >&2
+                exit 1
+            fi
+
+        else
+            echo "NOT UPDATING RELEASE"
+            echo "Set AFFECT_RELEASE=true to update release"
+            echo "Deleting: $name"
+            echo "Uploading new version: $name"
+        fi
+    fi
+done <<< "$ASSETS"
+
+echo -e "\nCOMPLETE"
